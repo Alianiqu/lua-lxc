@@ -29,7 +29,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <libgen.h>
+#include <errno.h>
 #include <lxc/lxccontainer.h>
+#include <sys/wait.h>
+
 
 #if LUA_VERSION_NUM < 502
 #define luaL_newlib(L,l) (lua_newtable(L), luaL_register(L,NULL,l))
@@ -59,6 +62,21 @@
 
 /* Max Lua arguments for function */
 #define MAXVARS	200
+
+/* Copied from lxc/utils.c */
+static int lxc_wait_for_pid_status(pid_t pid) {
+  int status, ret;
+ again:
+    ret = waitpid(pid, &status, 0);
+    if (ret == -1) {
+        if (errno == EINTR)
+	  goto again;
+        return -1;
+    }
+    if (ret != pid)
+      goto again;
+    return status;
+}
 
 static int container_new(lua_State *L)
 {
@@ -134,6 +152,94 @@ static int container_create(lua_State *L)
     return 1;
 }
 
+static int container_clone(lua_State *L)
+{
+    struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+    char *template_name = strdupa(luaL_checkstring(L, 2));
+    int argc = lua_gettop(L);
+    char **argv;
+    int i;
+
+    argv = alloca((argc+1) * sizeof(char *));
+    for (i = 0; i < argc-2; i++)
+	argv[i] = strdupa(luaL_checkstring(L, i+3));
+    argv[i] = NULL;
+
+    struct lxc_container *n;
+    n = c->clone(c, template_name, NULL, LXC_CLONE_SNAPSHOT, "overlayfs", NULL, 0, NULL);
+    lua_pushboolean(L, !!n);
+    lxc_container_put(n);
+    return 1;
+}
+
+static int lxc_attach_lua_exec(void * payload) {
+  int code = 0, z = 0;
+  FILE *fd = fopen("/log.txt", "w+");
+  lua_State * L = (lua_State *) payload;
+  int ret, nresults = 1, errfunc = 0;
+  int argc = lua_gettop(L);
+  if(argc < 2) {
+    fprintf(fd, "you must pass more than 1 arguments!\n");
+    goto exit;
+  }
+  if (lua_isfunction(L, 2) != 1) {
+    fprintf(fd, "second argument must be a function!\n");
+    goto exit;
+  }
+  ret = lua_pcall(L, argc-2, nresults, errfunc);
+  if (ret != 0) {
+    fprintf(fd, "error running function `f': %s", lua_tostring(L, -1));
+    code = 1;
+    /* error(L, "error running function `f': %s", lua_tostring(L, -1)); */
+  }
+  fprintf(fd, "lua_pcall ret: %d\n", ret);
+  fprintf(fd, "lua_pcall nresults: %d\n", nresults);
+  fprintf(fd, "lua_pcall errfunc: %d\n", errfunc);
+  fprintf(fd, "lua_gettop: %d\n", lua_gettop(L));
+
+  /* retrieve result */
+  if (!lua_isboolean(L, -1)) {
+    fprintf(fd, "function `f' must return a boolean");
+    code = 1;
+    /* error(L, "function `f' must return a boolean"); */
+  }
+  z = lua_toboolean(L, -1);
+  lua_pop(L, 1);  /* pop returned value */
+  fprintf(fd, "z_value is %d", z);
+
+ exit:
+  fclose(fd);
+  if (code == 0 && z == 1) {
+    return 1;
+  }
+  return 0;
+}
+
+static int container_exec(lua_State *L)
+{
+  pid_t pid;
+  int ret;
+  struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+  lxc_attach_options_t options = LXC_ATTACH_OPTIONS_DEFAULT;
+  options.initial_cwd = "/";
+  ret = c->attach(c, lxc_attach_lua_exec, L, &options, &pid);
+  printf("ret1 %d\n", ret);
+  if (ret < 0) {
+    return 0;
+  }
+  ret = lxc_wait_for_pid_status(pid);
+  printf("ret2 %d\n", ret);
+
+  if (WIFEXITED(ret) && WEXITSTATUS(ret) == 255) {
+    printf("ret3 %d\n", ret);
+    return 0;
+  }
+  printf("ret4 %d\n", ret);
+
+  lua_pushboolean(L, !!ret);
+  return 1;
+}
+
 static int container_destroy(lua_State *L)
 {
     struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
@@ -163,8 +269,8 @@ static int container_start(lua_State *L)
 	}
 	argv[j] = NULL;
     }
-
-    c->want_daemonize(c, true);
+    c->want_daemonize(c, false);
+    c->want_close_all_fds(c, true);
     lua_pushboolean(L, !!c->start(c, useinit, argv));
     return 1;
 }
@@ -492,8 +598,10 @@ static int container_get_ips(lua_State *L)
 
 static luaL_Reg lxc_container_methods[] =
 {
+    {"exec",                    container_exec},
     {"attach",                  container_attach},
     {"create",			container_create},
+    {"clone",			container_clone},
     {"defined",			container_defined},
     {"destroy",			container_destroy},
     {"init_pid",		container_init_pid},

@@ -147,6 +147,14 @@ function container:create(template, ...)
     return self.core:create(template, ...)
 end
 
+function container:clone(template, ...)
+    return self.core:clone(template, ...)
+end
+
+function container:exec(func, ...)
+    return self.core:exec(func, ...)
+end
+
 function container:destroy()
     return self.core:destroy()
 end
