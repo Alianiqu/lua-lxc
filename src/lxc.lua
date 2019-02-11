@@ -155,6 +155,14 @@ function container:exec(func, ...)
     return self.core:exec(func, ...)
 end
 
+function container:setip(ip, mask, dev)
+    return self.core:setip(ip, mask, dev)
+end
+
+function container:setroute(dst, mask, gw, dev)
+  return self.core:setroute(dst, mask, gw, dev)
+end
+
 function container:destroy()
     return self.core:destroy()
 end

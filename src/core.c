@@ -32,6 +32,11 @@
 #include <errno.h>
 #include <lxc/lxccontainer.h>
 #include <sys/wait.h>
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <net/route.h>
+#include <sys/ioctl.h>
+
 
 
 #if LUA_VERSION_NUM < 502
@@ -223,6 +228,224 @@ static int container_exec(lua_State *L)
   lxc_attach_options_t options = LXC_ATTACH_OPTIONS_DEFAULT;
   options.initial_cwd = "/";
   ret = c->attach(c, lxc_attach_lua_exec, L, &options, &pid);
+  printf("ret1 %d\n", ret);
+  if (ret < 0) {
+    return 0;
+  }
+  ret = lxc_wait_for_pid_status(pid);
+  printf("ret2 %d\n", ret);
+
+  if (WIFEXITED(ret) && WEXITSTATUS(ret) == 255) {
+    printf("ret3 %d\n", ret);
+    return 0;
+  }
+  printf("ret4 %d\n", ret);
+
+  lua_pushboolean(L, !!ret);
+  return 1;
+}
+
+static int _setip(FILE *sfd, const char *ip, const char *mask, const char *name) {
+
+  struct ifreq ifr;
+  struct sockaddr_in* addr = (struct sockaddr_in*) &ifr.ifr_addr;
+
+  /* const char * name = "enp3s0"; */
+  int fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+
+  fprintf(sfd, "ip %s", ip);
+  fprintf(sfd, "mask %s", mask);
+  fprintf(sfd, "name %s", name);
+
+  strncpy(ifr.ifr_name, name, IFNAMSIZ);
+
+  ifr.ifr_addr.sa_family = AF_INET;
+
+  /* inet_pton(AF_INET, "10.12.0.1", &addr->sin_addr); */
+  inet_pton(AF_INET, ip, &addr->sin_addr);
+  ioctl(fd, SIOCSIFADDR, &ifr);
+
+  /* inet_pton(AF_INET, "255.255.0.0", &addr->sin_addr); */
+  inet_pton(AF_INET, mask, &addr->sin_addr);
+  ioctl(fd, SIOCSIFNETMASK, &ifr);
+
+  ioctl(fd, SIOCGIFFLAGS, &ifr);
+  strncpy(ifr.ifr_name, name, IFNAMSIZ);
+  ifr.ifr_flags |= (IFF_UP | IFF_RUNNING);
+
+  ioctl(fd, SIOCSIFFLAGS, &ifr);
+  close(fd);
+  return 0;
+}
+
+static int lxc_attach_setip_exec(void * payload) {
+  lua_State * L = (lua_State *) payload;
+
+  FILE *fd = fopen("/log.txt", "w+");
+
+  int argc = lua_gettop(L);
+  int code;
+
+  if(argc < 4) {
+    fprintf(fd, "you must pass 3 arguments!\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 2) != 1) {
+    fprintf(fd, "second argument must be a string: ip!\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 3) != 1) {
+    fprintf(fd, "third argument must be a string: mask!\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 4) != 1) {
+    fprintf(fd, "forth argument must be a string: dev!\n");
+    goto exit;
+  }
+  char *ip = strdupa(luaL_checkstring(L, 2));
+  char *mask = strdupa(luaL_checkstring(L, 3));
+  char *dev = strdupa(luaL_checkstring(L, 4));
+  fprintf(fd, "setip %s %s %s\n", ip, mask, dev);
+  code = _setip(fd, ip, mask, dev);
+  fprintf(fd, "code %d\n", code);
+ exit:
+  fclose(fd);
+  if (code == 0) {
+    return 1;
+  }
+  return 0;
+}
+
+static int container_setip(lua_State *L)
+{
+  pid_t pid;
+  int ret;
+  struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+  lxc_attach_options_t options = LXC_ATTACH_OPTIONS_DEFAULT;
+  options.initial_cwd = "/";
+  ret = c->attach(c, lxc_attach_setip_exec, L, &options, &pid);
+  printf("ret1 %d\n", ret);
+  if (ret < 0) {
+    return 0;
+  }
+  ret = lxc_wait_for_pid_status(pid);
+  printf("ret2 %d\n", ret);
+
+  if (WIFEXITED(ret) && WEXITSTATUS(ret) == 255) {
+    printf("ret3 %d\n", ret);
+    return 0;
+  }
+  printf("ret4 %d\n", ret);
+
+  lua_pushboolean(L, !!ret);
+  return 1;
+}
+
+static int _setroute(FILE * cfd, const char * dst, const char * mask, const char * gw, const char * dev) {
+  int sockfd;
+  struct rtentry rt;
+
+  sockfd = socket(PF_INET, SOCK_DGRAM, IPPROTO_IP);
+  if (sockfd == -1) {
+    fprintf(cfd, "socket creation failed\n");
+    return 1;
+  }
+
+  fprintf(cfd, "dst %s mask %s gw %s dev %s\n", dst, mask, gw, dev);
+
+  struct sockaddr_in *sockinfo = (struct sockaddr_in *) &rt.rt_gateway;
+  sockinfo->sin_family = AF_INET;
+  sockinfo->sin_addr.s_addr = inet_addr(gw);
+
+  sockinfo = (struct sockaddr_in *) &rt.rt_dst;
+  sockinfo->sin_family = AF_INET;
+  /* sockinfo->sin_addr.s_addr = INADDR_ANY; */
+  sockinfo->sin_addr.s_addr = inet_addr(dst);
+
+  sockinfo = (struct sockaddr_in *) &rt.rt_genmask;
+  sockinfo->sin_family = AF_INET;
+  /* sockinfo->sin_addr.s_addr = INADDR_ANY; */
+  sockinfo->sin_addr.s_addr = inet_addr(mask);
+
+  rt.rt_flags = RTF_UP | RTF_GATEWAY;
+
+  /* rt.rt_dev = "eth0"; */
+
+  rt.rt_metric = 1;
+  if((rt.rt_dev = malloc(strlen(dev) * sizeof(char *))) == 0) {
+    fprintf(stderr, "Out of memory!\n%s\n", strerror(errno));
+    exit(1);
+  }
+
+  strncpy(rt.rt_dev, dev, IFNAMSIZ);
+
+  if(ioctl(sockfd, SIOCADDRT, &rt) < 0 ) {
+    fprintf(cfd, "ioctl failed");
+    exit(1);
+  }
+  free(rt.rt_dev);
+  close(sockfd);
+  return 0;
+}
+
+static int lxc_attach_setroute_exec(void * payload) {
+  lua_State * L = (lua_State *) payload;
+
+  FILE *fd = fopen("/log.txt", "w+");
+
+  int argc = lua_gettop(L);
+  int code = 1;
+
+  if(argc < 5) {
+    fprintf(fd, "you must pass 5 arguments!\n");
+    goto exit;
+  }
+  if (lua_isstring(L, 2) != 1) {
+    fprintf(fd, "dst: !\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 3) != 1) {
+    fprintf(fd, "mask: !\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 4) != 1) {
+    fprintf(fd, "gw: !\n");
+    goto exit;
+  }
+  if (lua_isstring(L, 5) != 1) {
+    fprintf(fd, "dev: !\n");
+    goto exit;
+  }
+
+  char *dst = strdupa(luaL_checkstring(L, 2));
+  char *mask = strdupa(luaL_checkstring(L, 3));
+  char *ip = strdupa(luaL_checkstring(L, 4));
+  char *dev = strdupa(luaL_checkstring(L, 5));
+
+  fprintf(fd, "setroute %s %s %s %s\n", dst, mask, ip, dev);
+  code = _setroute(fd, dst, mask, ip, dev);
+  fprintf(fd, "code %d\n", code);
+ exit:
+  fclose(fd);
+  if (code == 0) {
+    return 1;
+  }
+  return 0;
+}
+
+static int container_setroute(lua_State *L)
+{
+  pid_t pid;
+  int ret;
+  struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+  lxc_attach_options_t options = LXC_ATTACH_OPTIONS_DEFAULT;
+  options.initial_cwd = "/";
+  ret = c->attach(c, lxc_attach_setroute_exec, L, &options, &pid);
   printf("ret1 %d\n", ret);
   if (ret < 0) {
     return 0;
@@ -599,6 +822,8 @@ static int container_get_ips(lua_State *L)
 static luaL_Reg lxc_container_methods[] =
 {
     {"exec",                    container_exec},
+    {"setip",                   container_setip},
+    {"setroute",                container_setroute},
     {"attach",                  container_attach},
     {"create",			container_create},
     {"clone",			container_clone},
