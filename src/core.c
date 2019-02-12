@@ -344,7 +344,7 @@ static int container_setip(lua_State *L)
   return 1;
 }
 
-static int _setroute(FILE * cfd, const char * dst, const char * mask, const char * gw, const char * dev) {
+static int _setroute(FILE * cfd, const char * dst, const char * mask, const char * gw, const char * dev, const unsigned int metric) {
   int sockfd;
   struct rtentry rt;
 
@@ -374,7 +374,8 @@ static int _setroute(FILE * cfd, const char * dst, const char * mask, const char
 
   /* rt.rt_dev = "eth0"; */
 
-  rt.rt_metric = 1;
+  rt.rt_metric = metric;
+  rt.rt_metric += 1;
   if((rt.rt_dev = malloc(strlen(dev) * sizeof(char *))) == 0) {
     fprintf(stderr, "Out of memory!\n%s\n", strerror(errno));
     exit(1);
@@ -399,8 +400,8 @@ static int lxc_attach_setroute_exec(void * payload) {
   int argc = lua_gettop(L);
   int code = 1;
 
-  if(argc < 5) {
-    fprintf(fd, "you must pass 5 arguments!\n");
+  if(argc < 6) {
+    fprintf(fd, "you must pass 6 arguments!\n");
     goto exit;
   }
   if (lua_isstring(L, 2) != 1) {
@@ -421,14 +422,18 @@ static int lxc_attach_setroute_exec(void * payload) {
     fprintf(fd, "dev: !\n");
     goto exit;
   }
+  if (luaL_checkinteger(L, 6) < 0) {
+    fprintf(fd, "is positive int metric: !\n");
+    goto exit;
+  }
+  const char *dst = strdupa(luaL_checkstring(L, 2));
+  const char *mask = strdupa(luaL_checkstring(L, 3));
+  const char *ip = strdupa(luaL_checkstring(L, 4));
+  const char *dev = strdupa(luaL_checkstring(L, 5));
+  const unsigned int metric = luaL_checkint(L, 6);
 
-  char *dst = strdupa(luaL_checkstring(L, 2));
-  char *mask = strdupa(luaL_checkstring(L, 3));
-  char *ip = strdupa(luaL_checkstring(L, 4));
-  char *dev = strdupa(luaL_checkstring(L, 5));
-
-  fprintf(fd, "setroute %s %s %s %s\n", dst, mask, ip, dev);
-  code = _setroute(fd, dst, mask, ip, dev);
+  fprintf(fd, "setroute %s %s %s %s %u\n", dst, mask, ip, dev, metric);
+  code = _setroute(fd, dst, mask, ip, dev, metric);
   fprintf(fd, "code %d\n", code);
  exit:
   fclose(fd);
@@ -492,7 +497,7 @@ static int container_start(lua_State *L)
 	}
 	argv[j] = NULL;
     }
-    c->want_daemonize(c, false);
+    c->want_daemonize(c, true);
     c->want_close_all_fds(c, true);
     lua_pushboolean(L, !!c->start(c, useinit, argv));
     return 1;

@@ -159,8 +159,8 @@ function container:setip(ip, mask, dev)
     return self.core:setip(ip, mask, dev)
 end
 
-function container:setroute(dst, mask, gw, dev)
-  return self.core:setroute(dst, mask, gw, dev)
+function container:setroute(dst, mask, gw, dev, metric)
+  return self.core:setroute(dst, mask, gw, dev, metric)
 end
 
 function container:destroy()
