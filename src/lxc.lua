@@ -163,6 +163,10 @@ function container:setroute(dst, mask, gw, dev, metric)
   return self.core:setroute(dst, mask, gw, dev, metric)
 end
 
+function container:setfile(fpath, mode, value)
+  return self.core:setfile(fpath, mode, value)
+end
+
 function container:destroy()
     return self.core:destroy()
 end

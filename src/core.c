@@ -468,6 +468,81 @@ static int container_setroute(lua_State *L)
   return 1;
 }
 
+static int lxc_attach_setfile_exec(void * payload) {
+  lua_State * L = (lua_State *) payload;
+
+  FILE *fd = fopen("/log.txt", "w+");
+
+  int argc = lua_gettop(L);
+  int code = 1;
+
+  if(argc < 4) {
+    fprintf(fd, "you must pass 4 arguments!\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 2) != 1) {
+    fprintf(fd, "second argument must be a string: fpath!\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 3) != 1) {
+    fprintf(fd, "third argument must be a string: mode!\n");
+    goto exit;
+  }
+
+  if (lua_isstring(L, 4) != 1) {
+    fprintf(fd, "forth argument must be a string: value!\n");
+    goto exit;
+  }
+  char *fpath = strdupa(luaL_checkstring(L, 2));
+  char *mode = strdupa(luaL_checkstring(L, 3));
+  char *value = strdupa(luaL_checkstring(L, 4));
+  fprintf(fd, "setip %s %s %s\n", fpath, mode, value);
+  FILE * dfd = fopen(fpath, mode);
+  if (dfd == NULL) {
+    code = 1;
+    fprintf(fd, "Error open file '%s' '%s'!\n%s\n", fpath, mode, strerror(errno));
+    goto exit;
+  } else {
+    fprintf(dfd, "%s", value);
+    code = 0;
+    fclose(dfd);
+  }
+ exit:
+  fprintf(fd, "code %d\n", code);
+  fclose(fd);
+  if (code == 0) {
+    return 1;
+  }
+  return 0;
+}
+
+static int container_setfile(lua_State *L)
+{
+  pid_t pid;
+  int ret;
+  struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+  lxc_attach_options_t options = LXC_ATTACH_OPTIONS_DEFAULT;
+  options.initial_cwd = "/";
+  ret = c->attach(c, lxc_attach_setfile_exec, L, &options, &pid);
+  printf("ret1 %d\n", ret);
+  if (ret < 0) {
+    return 0;
+  }
+  ret = lxc_wait_for_pid_status(pid);
+  printf("ret2 %d\n", ret);
+
+  if (WIFEXITED(ret) && WEXITSTATUS(ret) == 255) {
+    printf("ret3 %d\n", ret);
+    return 0;
+  }
+  printf("ret4 %d\n", ret);
+
+  lua_pushboolean(L, !!ret);
+  return 1;
+}
+
 static int container_destroy(lua_State *L)
 {
     struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
@@ -829,6 +904,7 @@ static luaL_Reg lxc_container_methods[] =
     {"exec",                    container_exec},
     {"setip",                   container_setip},
     {"setroute",                container_setroute},
+    {"setfile",                 container_setfile},
     {"attach",                  container_attach},
     {"create",			container_create},
     {"clone",			container_clone},
