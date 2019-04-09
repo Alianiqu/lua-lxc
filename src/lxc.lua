@@ -151,6 +151,10 @@ function container:clone(template, ...)
     return self.core:clone(template, ...)
 end
 
+function container:console_getfd(template, ...)
+    return self.core:console_getfd(template, ...)
+end
+
 function container:exec(func, ...)
     return self.core:exec(func, ...)
 end

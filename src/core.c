@@ -177,6 +177,30 @@ static int container_clone(lua_State *L)
     return 1;
 }
 
+static int container_console_getfd(lua_State *L)
+{
+  int argc = lua_gettop(L);
+  if (argc < 1) {
+    lua_pushnil(L);
+    return 0;
+  }
+  
+  struct lxc_container *c = lua_unboxpointer(L, 1, CONTAINER_TYPENAME);
+  int tty = luaL_optint(L,2,-1);
+  int masterfd = 0;
+
+  int ret = c->console_getfd(c, &tty, &masterfd);
+  
+  if( ret < 0 )
+  {
+    lua_pushnil(L);
+    return 0;
+  }
+  
+  lua_pushinteger(L, masterfd);
+  return 1;
+}
+
 static int lxc_attach_lua_exec(void * payload) {
   int code = 0, z = 0;
   FILE *fd = fopen("/log.txt", "w+");
@@ -573,7 +597,7 @@ static int container_start(lua_State *L)
 	argv[j] = NULL;
     }
     c->want_daemonize(c, true);
-    c->want_close_all_fds(c, true);
+    c->want_close_all_fds(c, false);
     lua_pushboolean(L, !!c->start(c, useinit, argv));
     return 1;
 }
@@ -908,6 +932,7 @@ static luaL_Reg lxc_container_methods[] =
     {"attach",                  container_attach},
     {"create",			container_create},
     {"clone",			container_clone},
+    {"console_getfd",			container_console_getfd},
     {"defined",			container_defined},
     {"destroy",			container_destroy},
     {"init_pid",		container_init_pid},
