@@ -597,7 +597,7 @@ static int container_start(lua_State *L)
 	argv[j] = NULL;
     }
     c->want_daemonize(c, true);
-    c->want_close_all_fds(c, false);
+    c->want_close_all_fds(c, true);
     lua_pushboolean(L, !!c->start(c, useinit, argv));
     return 1;
 }
